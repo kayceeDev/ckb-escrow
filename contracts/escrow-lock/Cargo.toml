@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 blake2b-ref = "0.3.1"
 ckb-std = "1.0"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 [features]
 library = []
