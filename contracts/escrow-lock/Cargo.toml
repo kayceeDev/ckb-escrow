@@ -1,0 +1,12 @@
+[package]
+name = "escrow-lock"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake2b-ref = "0.3.1"
+ckb-std = "1.0"
+
+[features]
+library = []
+native-simulator = ["library", "ckb-std/native-simulator"]
