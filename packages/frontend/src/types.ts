@@ -41,3 +41,10 @@ export interface WalletState {
   }[];
   activeSigner: ccc.Signer | null;
 }
+
+export interface StudioSnapshot {
+  version: 1;
+  deployment: DeploymentFormState;
+  create: CreateEscrowFormState;
+  action: ActionFormState;
+}

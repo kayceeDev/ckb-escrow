@@ -5,6 +5,7 @@ import type {
   ActionFormState,
   CreateEscrowFormState,
   DeploymentFormState,
+  StudioSnapshot,
 } from "./types.js";
 
 export const testnetClient = new ccc.ClientPublicTestnet();
@@ -142,4 +143,41 @@ export function routeFromHash(hash: string): RouteId {
     return route;
   }
   return "overview";
+}
+
+export function createStudioSnapshot(
+  deployment: DeploymentFormState,
+  create: CreateEscrowFormState,
+  action: ActionFormState,
+): StudioSnapshot {
+  return {
+    version: 1,
+    deployment,
+    create,
+    action,
+  };
+}
+
+export function parseStudioSnapshot(raw: string): StudioSnapshot {
+  const parsed = JSON.parse(raw) as Partial<StudioSnapshot>;
+
+  if (parsed.version !== 1) {
+    throw new Error("Unsupported studio snapshot version");
+  }
+
+  return {
+    version: 1,
+    deployment: {
+      ...initialDeployment,
+      ...parsed.deployment,
+    },
+    create: {
+      ...initialCreateForm,
+      ...parsed.create,
+    },
+    action: {
+      ...initialActionForm,
+      ...parsed.action,
+    },
+  };
 }

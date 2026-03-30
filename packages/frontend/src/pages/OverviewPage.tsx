@@ -18,6 +18,9 @@ interface OverviewPageProps {
   actionForm: ActionFormState;
   onSelectSigner: (signer: ccc.Signer) => void;
   onRefreshWallets: () => void;
+  onExportSnapshot: () => void;
+  onImportSnapshot: () => void;
+  onResetStudio: () => void;
 }
 
 export function OverviewPage({
@@ -30,6 +33,9 @@ export function OverviewPage({
   actionForm,
   onSelectSigner,
   onRefreshWallets,
+  onExportSnapshot,
+  onImportSnapshot,
+  onResetStudio,
 }: OverviewPageProps) {
   return (
     <div className="page-grid">
@@ -43,6 +49,15 @@ export function OverviewPage({
           </div>
           <button className="secondary-button" onClick={onRefreshWallets}>
             Refresh Wallets
+          </button>
+          <button className="secondary-button" onClick={onExportSnapshot}>
+            Export Studio
+          </button>
+          <button className="secondary-button" onClick={onImportSnapshot}>
+            Import Studio
+          </button>
+          <button className="secondary-button danger" onClick={onResetStudio}>
+            Reset Forms
           </button>
         </div>
         <div className="stat-grid">

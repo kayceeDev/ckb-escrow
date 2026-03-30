@@ -4,6 +4,8 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   STORAGE_KEYS,
+  createStudioSnapshot,
+  decodeEscrowHex,
   initialActionForm,
   initialCreateForm,
   initialDeployment,
@@ -12,12 +14,12 @@ import {
   makeEscrowCell,
   makeLock,
   makeTypeScript,
+  parseStudioSnapshot,
   prettyJson,
   routeFromHash,
   ROUTE_LABELS,
   testnetClient,
   type RouteId,
-  decodeEscrowHex,
 } from "./studio.js";
 import type {
   ActionFormState,
@@ -58,6 +60,7 @@ export function App() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [route, setRoute] = useState<RouteId>(() => routeFromHash(window.location.hash));
   const controllerRef = useRef<ccc.SignersController | null>(null);
+  const importRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     function onHashChange() {
@@ -155,6 +158,39 @@ export function App() {
     }
   }
 
+  function exportSnapshot() {
+    const snapshot = createStudioSnapshot(deployment, createForm, actionForm);
+    const blob = new Blob([prettyJson(snapshot)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "ckb-escrow-studio.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setStatus("Studio snapshot exported.");
+  }
+
+  async function importSnapshot(file: File) {
+    try {
+      const snapshot = parseStudioSnapshot(await file.text());
+      setDeployment(snapshot.deployment);
+      setCreateForm(snapshot.create);
+      setActionForm(snapshot.action);
+      setStatus("Studio snapshot imported.");
+    } catch (error) {
+      setStatus(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function resetStudio() {
+    setDeployment(initialDeployment);
+    setCreateForm(initialCreateForm);
+    setActionForm(initialActionForm);
+    setTxPreview("");
+    setLastTxHash("");
+    setStatus("Studio forms reset.");
+  }
+
   const pageProps = {
     createForm,
     actionForm,
@@ -164,6 +200,19 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <input
+        ref={importRef}
+        type="file"
+        accept="application/json"
+        className="hidden-input"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            void importSnapshot(file);
+          }
+          event.target.value = "";
+        }}
+      />
       <header className="hero">
         <div>
           <p className="eyebrow">CKB Escrow Studio</p>
@@ -205,6 +254,9 @@ export function App() {
               setWalletState((current) => ({ ...current, activeSigner: signer }))
             }
             onRefreshWallets={() => void refreshWallets()}
+            onExportSnapshot={exportSnapshot}
+            onImportSnapshot={() => importRef.current?.click()}
+            onResetStudio={resetStudio}
           />
         ) : null}
 

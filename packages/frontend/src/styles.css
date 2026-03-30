@@ -29,6 +29,10 @@ body {
   min-height: 100vh;
 }
 
+.hidden-input {
+  display: none;
+}
+
 button,
 input,
 textarea,
@@ -173,6 +177,11 @@ select {
   background: rgba(255, 255, 255, 0.76);
   padding: 10px 14px;
   cursor: pointer;
+}
+
+.secondary-button.danger {
+  color: var(--accent-deep);
+  border-color: rgba(141, 53, 16, 0.26);
 }
 
 .wallet-card {
