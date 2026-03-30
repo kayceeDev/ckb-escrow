@@ -8,7 +8,9 @@
   "scripts": {
     "build": "npm run build --workspace @ckb-escrow/sdk && npm run build --workspace @ckb-escrow/ccc-adapter && npm run build --workspace @ckb-escrow/app && npm run build --workspace @ckb-escrow/frontend",
     "typecheck": "npm run typecheck --workspace @ckb-escrow/sdk && npm run typecheck --workspace @ckb-escrow/ccc-adapter && npm run typecheck --workspace @ckb-escrow/app && npm run typecheck --workspace @ckb-escrow/frontend",
-    "test": "npm run test --workspace @ckb-escrow/sdk && npm run test --workspace @ckb-escrow/ccc-adapter && npm run test --workspace @ckb-escrow/app && npm run test --workspace @ckb-escrow/frontend"
+    "test": "npm run test --workspace @ckb-escrow/sdk && npm run test --workspace @ckb-escrow/ccc-adapter && npm run test --workspace @ckb-escrow/app && npm run test --workspace @ckb-escrow/frontend",
+    "pack:shared": "npm run build --workspace @ckb-escrow/sdk && npm run build --workspace @ckb-escrow/ccc-adapter && npm run build --workspace @ckb-escrow/app && mkdir -p artifacts/npm && npm pack --pack-destination ../../artifacts/npm --workspace @ckb-escrow/sdk && npm pack --pack-destination ../../artifacts/npm --workspace @ckb-escrow/ccc-adapter && npm pack --pack-destination ../../artifacts/npm --workspace @ckb-escrow/app",
+    "export:frontend-repo": "node ./scripts/export-frontend-repo.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
