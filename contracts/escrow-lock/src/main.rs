@@ -1,6 +1,7 @@
 #![cfg_attr(not(any(feature = "library", test)), no_std)]
 #![cfg_attr(not(test), no_main)]
 
+#[cfg(any(feature = "library", test))]
 extern crate alloc;
 
 mod types;
