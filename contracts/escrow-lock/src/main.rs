@@ -36,6 +36,7 @@ const ERR_LOAD_CELL_TYPE_HASH: i8 = -7;
 const ERR_LOAD_WITNESS_ARGS: i8 = -8;
 const ERR_INVALID_ACTION: i8 = -9;
 const ERR_LOAD_HEADER: i8 = -10;
+const ERR_LOAD_CELL_CAPACITY: i8 = -11;
 
 // Witness input_type action codes:
 // 0x01 = seller marks delivered
@@ -109,10 +110,16 @@ fn validate_creation(
 fn validate_transition(
     old_escrow: &EscrowData,
     new_escrow: &EscrowData,
+    old_capacity: u64,
+    new_capacity: u64,
     input_lock_hashes: &[[u8; 32]],
     action: EscrowAction,
 ) -> Result<(), EscrowError> {
     old_escrow.assert_immutable_fields_match(new_escrow)?;
+
+    if old_capacity != new_capacity {
+        return Err(EscrowError::InvalidMoneyFlow);
+    }
 
     match (old_escrow.state, new_escrow.state, action) {
         (EscrowState::Funded, EscrowState::Delivered, EscrowAction::Deliver) => {
@@ -135,7 +142,7 @@ fn validate_terminal_settlement(
     old_escrow: &EscrowData,
     input_lock_hashes: &[[u8; 32]],
     action: EscrowAction,
-    recipient_paid: u64,
+    recipient_net_gain: u64,
     current_timestamp: Option<u64>,
 ) -> Result<(), EscrowError> {
     match (old_escrow.state, action) {
@@ -168,7 +175,7 @@ fn validate_terminal_settlement(
         _ => return Err(EscrowError::InvalidTransition),
     }
 
-    if recipient_paid < old_escrow.amount {
+    if recipient_net_gain < old_escrow.amount {
         return Err(EscrowError::InvalidMoneyFlow);
     }
 
@@ -236,6 +243,32 @@ fn sum_output_capacity_for_lock_hash(expected: &[u8; 32]) -> Result<u64, i8> {
     }
 
     Ok(total)
+}
+
+fn sum_input_capacity_for_lock_hash(expected: &[u8; 32]) -> Result<u64, i8> {
+    let mut total = 0u64;
+    let mut index = 0;
+
+    loop {
+        match load_cell_lock_hash(index, Source::Input) {
+            Ok(lock_hash) => {
+                if &lock_hash == expected {
+                    let capacity = load_cell_capacity(index, Source::Input)
+                        .map_err(|_| ERR_LOAD_CELL_CAPACITY)?;
+                    total = total.checked_add(capacity).ok_or(ERR_LOAD_CELL_CAPACITY)?;
+                }
+                index += 1;
+            }
+            Err(SysError::IndexOutOfBound) => break,
+            Err(_) => return Err(ERR_LOAD_INPUT_LOCK_HASH),
+        }
+    }
+
+    Ok(total)
+}
+
+fn load_cell_capacity_checked(index: usize, source: Source) -> Result<u64, i8> {
+    load_cell_capacity(index, source).map_err(|_| ERR_LOAD_CELL_CAPACITY)
 }
 
 fn find_escrow_cell(source: Source, script_hash: &[u8; 32]) -> Result<(Option<usize>, usize), i8> {
@@ -321,10 +354,25 @@ pub fn program_entry() -> i8 {
                 Ok(action) => action,
                 Err(code) => return code,
             };
+            let old_capacity = match load_cell_capacity_checked(input_index, Source::Input) {
+                Ok(capacity) => capacity,
+                Err(code) => return code,
+            };
+            let new_capacity = match load_cell_capacity_checked(output_index, Source::Output) {
+                Ok(capacity) => capacity,
+                Err(code) => return code,
+            };
 
-            validate_transition(&old_escrow, &new_escrow, &input_lock_hashes, action)
-                .map(|_| 0)
-                .unwrap_or_else(|err| err.code())
+            validate_transition(
+                &old_escrow,
+                &new_escrow,
+                old_capacity,
+                new_capacity,
+                &input_lock_hashes,
+                action,
+            )
+            .map(|_| 0)
+            .unwrap_or_else(|err| err.code())
         }
         (Some(input_index), None) => {
             let old_escrow = match load_escrow_data(input_index, Source::Input) {
@@ -347,10 +395,18 @@ pub fn program_entry() -> i8 {
                 _ => return EscrowError::InvalidTransition.code(),
             };
 
-            let recipient_paid = match sum_output_capacity_for_lock_hash(&recipient_lock_hash) {
-                Ok(amount) => amount,
-                Err(code) => return code,
-            };
+            let recipient_output_capacity =
+                match sum_output_capacity_for_lock_hash(&recipient_lock_hash) {
+                    Ok(amount) => amount,
+                    Err(code) => return code,
+                };
+            let recipient_input_capacity =
+                match sum_input_capacity_for_lock_hash(&recipient_lock_hash) {
+                    Ok(amount) => amount,
+                    Err(code) => return code,
+                };
+            let recipient_net_gain =
+                recipient_output_capacity.saturating_sub(recipient_input_capacity);
             let current_timestamp = if action == EscrowAction::Refund {
                 match load_reference_timestamp() {
                     Ok(timestamp) => Some(timestamp),
@@ -364,7 +420,7 @@ pub fn program_entry() -> i8 {
                 &old_escrow,
                 &input_lock_hashes,
                 action,
-                recipient_paid,
+                recipient_net_gain,
                 current_timestamp,
             )
             .map(|_| 0)
@@ -434,13 +490,22 @@ mod tests {
         let seller_present = vec![sample_hash(0x22)];
 
         assert!(matches!(
-            validate_transition(&old_escrow, &new_escrow, &buyer_only, EscrowAction::Deliver),
+            validate_transition(
+                &old_escrow,
+                &new_escrow,
+                2_000,
+                2_000,
+                &buyer_only,
+                EscrowAction::Deliver,
+            ),
             Err(EscrowError::UnauthorizedSigner)
         ));
         assert!(
             validate_transition(
                 &old_escrow,
                 &new_escrow,
+                2_000,
+                2_000,
                 &seller_present,
                 EscrowAction::Deliver
             )
@@ -457,6 +522,8 @@ mod tests {
         let result = validate_transition(
             &old_escrow,
             &new_escrow,
+            2_000,
+            2_000,
             &[sample_hash(0x22)],
             EscrowAction::Cancel,
         );
@@ -475,15 +542,56 @@ mod tests {
         let seller = vec![sample_hash(0x22)];
 
         assert!(matches!(
-            validate_transition(&old_escrow, &new_escrow, &outsider, EscrowAction::Dispute),
+            validate_transition(
+                &old_escrow,
+                &new_escrow,
+                2_000,
+                2_000,
+                &outsider,
+                EscrowAction::Dispute,
+            ),
             Err(EscrowError::UnauthorizedSigner)
         ));
         assert!(
-            validate_transition(&old_escrow, &new_escrow, &buyer, EscrowAction::Dispute).is_ok()
+            validate_transition(
+                &old_escrow,
+                &new_escrow,
+                2_000,
+                2_000,
+                &buyer,
+                EscrowAction::Dispute,
+            )
+            .is_ok()
         );
         assert!(
-            validate_transition(&old_escrow, &new_escrow, &seller, EscrowAction::Dispute).is_ok()
+            validate_transition(
+                &old_escrow,
+                &new_escrow,
+                2_000,
+                2_000,
+                &seller,
+                EscrowAction::Dispute,
+            )
+            .is_ok()
         );
+    }
+
+    #[test]
+    fn transition_rejects_capacity_change() {
+        let old_escrow = sample_escrow(EscrowState::Funded);
+        let mut new_escrow = old_escrow.clone();
+        new_escrow.state = EscrowState::Delivered;
+
+        let result = validate_transition(
+            &old_escrow,
+            &new_escrow,
+            2_000,
+            1_999,
+            &[sample_hash(0x22)],
+            EscrowAction::Deliver,
+        );
+
+        assert!(matches!(result, Err(EscrowError::InvalidMoneyFlow)));
     }
 
     #[test]
@@ -661,6 +769,8 @@ mod tests {
         let result = validate_transition(
             &old_escrow,
             &new_escrow,
+            2_000,
+            2_000,
             &[sample_hash(0x22)],
             EscrowAction::Deliver,
         );
@@ -677,6 +787,8 @@ mod tests {
         let result = validate_transition(
             &old_escrow,
             &refunded,
+            2_000,
+            2_000,
             &[sample_hash(0x11)],
             EscrowAction::Deliver,
         );
