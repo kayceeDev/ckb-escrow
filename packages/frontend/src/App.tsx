@@ -1,6 +1,7 @@
 import * as ccc from "@ckb-ccc/ccc";
 import { EscrowService } from "@ckb-escrow/app";
-import { useEffect, useState } from "react";
+import { decodeEscrowData, type EscrowCellView } from "@ckb-escrow/sdk";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import type {
   ActionFormState,
@@ -10,6 +11,12 @@ import type {
 } from "./types.js";
 
 const testnetClient = new ccc.ClientPublicTestnet();
+
+const STORAGE_KEYS = {
+  deployment: "ckb-escrow:deployment",
+  create: "ckb-escrow:create",
+  action: "ckb-escrow:action",
+} as const;
 
 const initialDeployment: DeploymentFormState = {
   codeHash: "",
@@ -43,6 +50,23 @@ const initialActionForm: ActionFormState = {
   referenceTimestampMs: "",
   headerDepHash: "",
 };
+
+function loadStoredState<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  const raw = window.localStorage.getItem(key);
+  if (!raw) {
+    return fallback;
+  }
+
+  try {
+    return { ...fallback, ...JSON.parse(raw) } as T;
+  } catch {
+    return fallback;
+  }
+}
 
 function makeTypeScript(form: DeploymentFormState): ccc.ScriptLike {
   return {
@@ -85,29 +109,84 @@ function makeEscrowCell(action: ActionFormState, deployment: DeploymentFormState
   };
 }
 
+type AsyncAction = () => Promise<ccc.Transaction | ccc.Hex>;
+
+function prettyJson(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_, nested) => (typeof nested === "bigint" ? nested.toString() : nested),
+    2,
+  );
+}
+
 export function App() {
   const [walletState, setWalletState] = useState<WalletState>({
     wallets: [],
     activeSigner: null,
   });
-  const [deployment, setDeployment] = useState(initialDeployment);
-  const [createForm, setCreateForm] = useState(initialCreateForm);
-  const [actionForm, setActionForm] = useState(initialActionForm);
+  const [deployment, setDeployment] = useState<DeploymentFormState>(() =>
+    loadStoredState(STORAGE_KEYS.deployment, initialDeployment),
+  );
+  const [createForm, setCreateForm] = useState<CreateEscrowFormState>(() =>
+    loadStoredState(STORAGE_KEYS.create, initialCreateForm),
+  );
+  const [actionForm, setActionForm] = useState<ActionFormState>(() =>
+    loadStoredState(STORAGE_KEYS.action, initialActionForm),
+  );
   const [txPreview, setTxPreview] = useState<string>("");
+  const [lastTxHash, setLastTxHash] = useState<string>("");
   const [status, setStatus] = useState<string>("Idle");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const controllerRef = useRef<ccc.SignersController | null>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.deployment, JSON.stringify(deployment));
+  }, [deployment]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.create, JSON.stringify(createForm));
+  }, [createForm]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.action, JSON.stringify(actionForm));
+  }, [actionForm]);
 
   useEffect(() => {
     const controller = new ccc.SignersController();
+    controllerRef.current = controller;
 
-    void controller.refresh(testnetClient, (wallets) => {
-      setWalletState((current) => ({
-        wallets,
-        activeSigner: current.activeSigner,
-      }));
-    });
+    async function refreshWallets() {
+      setStatus("Refreshing wallets...");
+      await controller.refresh(testnetClient, (wallets) => {
+        setWalletState((current) => ({
+          wallets,
+          activeSigner:
+            current.activeSigner &&
+            wallets.some((wallet) =>
+              wallet.signers.some((signerInfo) => signerInfo.signer === current.activeSigner),
+            )
+              ? current.activeSigner
+              : null,
+        }));
+      });
+      setStatus("Wallet discovery finished.");
+    }
+
+    void refreshWallets();
 
     return () => controller.disconnect();
   }, []);
+
+  const decodedEscrow = useMemo<EscrowCellView | null>(() => {
+    try {
+      if (!actionForm.escrowDataHex || actionForm.escrowDataHex === "0x") {
+        return null;
+      }
+      return decodeEscrowData(actionForm.escrowDataHex as `0x${string}`);
+    } catch {
+      return null;
+    }
+  }, [actionForm.escrowDataHex]);
 
   const service = walletState.activeSigner
     ? new EscrowService({
@@ -119,26 +198,89 @@ export function App() {
       })
     : null;
 
+  function updateDeployment<K extends keyof DeploymentFormState>(
+    key: K,
+    value: DeploymentFormState[K],
+  ) {
+    setDeployment((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateCreateForm<K extends keyof CreateEscrowFormState>(
+    key: K,
+    value: CreateEscrowFormState[K],
+  ) {
+    setCreateForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateActionForm<K extends keyof ActionFormState>(
+    key: K,
+    value: ActionFormState[K],
+  ) {
+    setActionForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function runAction(label: string, action: AsyncAction) {
+    try {
+      setBusyAction(label);
+      setStatus(`${label} in progress...`);
+      const result = await action();
+
+      if (typeof result === "string") {
+        setLastTxHash(result);
+        setTxPreview("");
+        setStatus(`${label} submitted.`);
+      } else {
+        setTxPreview(prettyJson(result));
+        setLastTxHash("");
+        setStatus(`${label} prepared.`);
+      }
+    } catch (error) {
+      setStatus(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function previewCreate() {
     if (!service) {
       setStatus("Select a signer before building transactions.");
       return;
     }
 
-    const tx = await service.buildCreateEscrow({
-      sellerLock: makeLock(createForm.sellerCodeHash, createForm.sellerArgs),
-      arbitratorLock: makeLock(
-        createForm.arbitratorCodeHash,
-        createForm.arbitratorArgs,
-      ),
-      escrowLock: makeLock(createForm.escrowCodeHash, createForm.escrowArgs),
-      amountShannons: BigInt(createForm.amountShannons),
-      deadlineMs: BigInt(createForm.deadlineMs),
-      description: createForm.description,
-    });
+    await runAction("Create preview", async () =>
+      service.buildCreateEscrow({
+        sellerLock: makeLock(createForm.sellerCodeHash, createForm.sellerArgs),
+        arbitratorLock: makeLock(
+          createForm.arbitratorCodeHash,
+          createForm.arbitratorArgs,
+        ),
+        escrowLock: makeLock(createForm.escrowCodeHash, createForm.escrowArgs),
+        amountShannons: BigInt(createForm.amountShannons),
+        deadlineMs: BigInt(createForm.deadlineMs),
+        description: createForm.description,
+      }),
+    );
+  }
 
-    setTxPreview(JSON.stringify(tx, null, 2));
-    setStatus("Create transaction prepared.");
+  async function sendCreate() {
+    if (!service) {
+      setStatus("Select a signer before sending transactions.");
+      return;
+    }
+
+    await runAction("Create send", async () =>
+      service.sendCreateEscrow({
+        sellerLock: makeLock(createForm.sellerCodeHash, createForm.sellerArgs),
+        arbitratorLock: makeLock(
+          createForm.arbitratorCodeHash,
+          createForm.arbitratorArgs,
+        ),
+        escrowLock: makeLock(createForm.escrowCodeHash, createForm.escrowArgs),
+        amountShannons: BigInt(createForm.amountShannons),
+        deadlineMs: BigInt(createForm.deadlineMs),
+        description: createForm.description,
+      }),
+    );
   }
 
   async function previewDeliver() {
@@ -147,9 +289,20 @@ export function App() {
       return;
     }
 
-    const tx = service.buildDeliver(makeEscrowCell(actionForm, deployment));
-    setTxPreview(JSON.stringify(tx, null, 2));
-    setStatus("Deliver transaction prepared.");
+    await runAction("Deliver preview", async () =>
+      service.buildDeliver(makeEscrowCell(actionForm, deployment)),
+    );
+  }
+
+  async function sendDeliver() {
+    if (!service) {
+      setStatus("Select a signer before sending transactions.");
+      return;
+    }
+
+    await runAction("Deliver send", async () =>
+      service.sendDeliver(makeEscrowCell(actionForm, deployment)),
+    );
   }
 
   async function previewDispute() {
@@ -158,9 +311,20 @@ export function App() {
       return;
     }
 
-    const tx = service.buildDispute(makeEscrowCell(actionForm, deployment));
-    setTxPreview(JSON.stringify(tx, null, 2));
-    setStatus("Dispute transaction prepared.");
+    await runAction("Dispute preview", async () =>
+      service.buildDispute(makeEscrowCell(actionForm, deployment)),
+    );
+  }
+
+  async function sendDispute() {
+    if (!service) {
+      setStatus("Select a signer before sending transactions.");
+      return;
+    }
+
+    await runAction("Dispute send", async () =>
+      service.sendDispute(makeEscrowCell(actionForm, deployment)),
+    );
   }
 
   async function previewRefund() {
@@ -169,13 +333,28 @@ export function App() {
       return;
     }
 
-    const tx = await service.buildRefund({
-      escrowInput: makeEscrowCell(actionForm, deployment),
-      referenceTimestampMs: BigInt(actionForm.referenceTimestampMs || "0"),
-      headerDeps: actionForm.headerDepHash ? [actionForm.headerDepHash] : [],
-    });
-    setTxPreview(JSON.stringify(tx, null, 2));
-    setStatus("Refund transaction prepared.");
+    await runAction("Refund preview", async () =>
+      service.buildRefund({
+        escrowInput: makeEscrowCell(actionForm, deployment),
+        referenceTimestampMs: BigInt(actionForm.referenceTimestampMs || "0"),
+        headerDeps: actionForm.headerDepHash ? [actionForm.headerDepHash] : [],
+      }),
+    );
+  }
+
+  async function sendRefund() {
+    if (!service) {
+      setStatus("Select a signer before sending transactions.");
+      return;
+    }
+
+    await runAction("Refund send", async () =>
+      service.sendRefund({
+        escrowInput: makeEscrowCell(actionForm, deployment),
+        referenceTimestampMs: BigInt(actionForm.referenceTimestampMs || "0"),
+        headerDeps: actionForm.headerDepHash ? [actionForm.headerDepHash] : [],
+      }),
+    );
   }
 
   async function previewResolveToSeller() {
@@ -184,12 +363,26 @@ export function App() {
       return;
     }
 
-    const tx = service.buildResolveToSeller({
-      escrowInput: makeEscrowCell(actionForm, deployment),
-      recipientLock: makeLock(actionForm.recipientCodeHash, actionForm.recipientArgs),
-    });
-    setTxPreview(JSON.stringify(tx, null, 2));
-    setStatus("Resolve-to-seller transaction prepared.");
+    await runAction("Resolve preview", async () =>
+      service.buildResolveToSeller({
+        escrowInput: makeEscrowCell(actionForm, deployment),
+        recipientLock: makeLock(actionForm.recipientCodeHash, actionForm.recipientArgs),
+      }),
+    );
+  }
+
+  async function sendResolveToSeller() {
+    if (!service) {
+      setStatus("Select a signer before sending transactions.");
+      return;
+    }
+
+    await runAction("Resolve send", async () =>
+      service.sendResolveToSeller({
+        escrowInput: makeEscrowCell(actionForm, deployment),
+        recipientLock: makeLock(actionForm.recipientCodeHash, actionForm.recipientArgs),
+      }),
+    );
   }
 
   return (
@@ -197,22 +390,44 @@ export function App() {
       <header className="hero">
         <div>
           <p className="eyebrow">CKB Escrow Studio</p>
-          <h1>Protocol-aware frontend for goods and services escrow on CKB.</h1>
+          <h1>Escrow flows prepared, signed, and sent from one workspace.</h1>
           <p className="lede">
-            This frontend sits on top of the escrow app service, CCC adapter, and protocol SDK.
-            It is designed to prepare real transaction flows instead of scattering chain logic across UI components.
+            We now have a protocol layer, CCC adapter, app service, and a frontend shell that can
+            prepare and submit escrow actions. This screen is intentionally operational, not just decorative.
           </p>
         </div>
         <div className="status-card">
           <span className="status-label">Status</span>
           <strong>{status}</strong>
+          {lastTxHash ? (
+            <code className="tx-hash">{lastTxHash}</code>
+          ) : null}
         </div>
       </header>
 
       <main className="grid">
         <section className="panel">
-          <h2>Wallets</h2>
-          <p className="muted">Discovered through CCC signers controller on CKB testnet.</p>
+          <div className="panel-head">
+            <div>
+              <h2>Wallets</h2>
+              <p className="muted">Discovered through CCC signers controller on CKB testnet.</p>
+            </div>
+            <button
+              className="secondary-button"
+              onClick={() => {
+                controllerRef.current?.disconnect();
+                void controllerRef.current?.refresh(testnetClient, (wallets) => {
+                  setWalletState((current) => ({
+                    wallets,
+                    activeSigner: current.activeSigner,
+                  }));
+                });
+                setStatus("Wallet refresh requested.");
+              }}
+            >
+              Refresh
+            </button>
+          </div>
           <div className="wallet-list">
             {walletState.wallets.length === 0 ? (
               <p className="empty">No wallets discovered yet.</p>
@@ -256,8 +471,8 @@ export function App() {
               <span>Type Script Code Hash</span>
               <input
                 value={deployment.codeHash}
-                onChange={(event) =>
-                  setDeployment((current) => ({ ...current, codeHash: event.target.value }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateDeployment("codeHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -266,11 +481,8 @@ export function App() {
               <span>Hash Type</span>
               <select
                 value={deployment.hashType}
-                onChange={(event) =>
-                  setDeployment((current) => ({
-                    ...current,
-                    hashType: event.target.value as "type" | "data",
-                  }))
+                onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                  updateDeployment("hashType", event.target.value as "type" | "data")
                 }
               >
                 <option value="type">type</option>
@@ -281,8 +493,8 @@ export function App() {
               <span>Args</span>
               <input
                 value={deployment.args}
-                onChange={(event) =>
-                  setDeployment((current) => ({ ...current, args: event.target.value }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateDeployment("args", event.target.value)
                 }
                 placeholder="0x"
               />
@@ -291,8 +503,8 @@ export function App() {
               <span>Cell Dep Tx Hash</span>
               <input
                 value={deployment.depTxHash}
-                onChange={(event) =>
-                  setDeployment((current) => ({ ...current, depTxHash: event.target.value }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateDeployment("depTxHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -301,8 +513,8 @@ export function App() {
               <span>Cell Dep Index</span>
               <input
                 value={deployment.depIndex}
-                onChange={(event) =>
-                  setDeployment((current) => ({ ...current, depIndex: event.target.value }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateDeployment("depIndex", event.target.value)
                 }
               />
             </label>
@@ -316,11 +528,8 @@ export function App() {
               <span>Seller Lock Code Hash</span>
               <input
                 value={createForm.sellerCodeHash}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    sellerCodeHash: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("sellerCodeHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -329,8 +538,8 @@ export function App() {
               <span>Seller Args</span>
               <input
                 value={createForm.sellerArgs}
-                onChange={(event) =>
-                  setCreateForm((current) => ({ ...current, sellerArgs: event.target.value }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("sellerArgs", event.target.value)
                 }
               />
             </label>
@@ -338,11 +547,8 @@ export function App() {
               <span>Arbitrator Lock Code Hash</span>
               <input
                 value={createForm.arbitratorCodeHash}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    arbitratorCodeHash: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("arbitratorCodeHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -351,11 +557,8 @@ export function App() {
               <span>Arbitrator Args</span>
               <input
                 value={createForm.arbitratorArgs}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    arbitratorArgs: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("arbitratorArgs", event.target.value)
                 }
               />
             </label>
@@ -363,11 +566,8 @@ export function App() {
               <span>Escrow Lock Code Hash</span>
               <input
                 value={createForm.escrowCodeHash}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    escrowCodeHash: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("escrowCodeHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -376,8 +576,8 @@ export function App() {
               <span>Escrow Args</span>
               <input
                 value={createForm.escrowArgs}
-                onChange={(event) =>
-                  setCreateForm((current) => ({ ...current, escrowArgs: event.target.value }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("escrowArgs", event.target.value)
                 }
               />
             </label>
@@ -385,11 +585,8 @@ export function App() {
               <span>Amount (shannons)</span>
               <input
                 value={createForm.amountShannons}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    amountShannons: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("amountShannons", event.target.value)
                 }
               />
             </label>
@@ -397,11 +594,8 @@ export function App() {
               <span>Deadline (ms)</span>
               <input
                 value={createForm.deadlineMs}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    deadlineMs: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("deadlineMs", event.target.value)
                 }
               />
             </label>
@@ -409,17 +603,19 @@ export function App() {
               <span>Description</span>
               <input
                 value={createForm.description}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    description: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateCreateForm("description", event.target.value)
                 }
               />
             </label>
           </div>
           <div className="actions">
-            <button onClick={() => void previewCreate()}>Preview Create</button>
+            <button onClick={() => void previewCreate()} disabled={busyAction !== null}>
+              Preview Create
+            </button>
+            <button onClick={() => void sendCreate()} disabled={busyAction !== null}>
+              Send Create
+            </button>
           </div>
         </section>
 
@@ -430,11 +626,8 @@ export function App() {
               <span>Escrow Tx Hash</span>
               <input
                 value={actionForm.escrowTxHash}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    escrowTxHash: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("escrowTxHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -443,11 +636,8 @@ export function App() {
               <span>Escrow Index</span>
               <input
                 value={actionForm.escrowIndex}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    escrowIndex: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("escrowIndex", event.target.value)
                 }
               />
             </label>
@@ -455,11 +645,8 @@ export function App() {
               <span>Escrow Capacity</span>
               <input
                 value={actionForm.escrowCapacity}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    escrowCapacity: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("escrowCapacity", event.target.value)
                 }
               />
             </label>
@@ -467,11 +654,8 @@ export function App() {
               <span>Escrow Lock Code Hash</span>
               <input
                 value={actionForm.escrowLockCodeHash}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    escrowLockCodeHash: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("escrowLockCodeHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -480,11 +664,8 @@ export function App() {
               <span>Escrow Lock Args</span>
               <input
                 value={actionForm.escrowLockArgs}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    escrowLockArgs: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("escrowLockArgs", event.target.value)
                 }
               />
             </label>
@@ -492,11 +673,8 @@ export function App() {
               <span>Escrow Data Hex</span>
               <textarea
                 value={actionForm.escrowDataHex}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    escrowDataHex: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
+                  updateActionForm("escrowDataHex", event.target.value)
                 }
               />
             </label>
@@ -504,11 +682,8 @@ export function App() {
               <span>Recipient Code Hash</span>
               <input
                 value={actionForm.recipientCodeHash}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    recipientCodeHash: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("recipientCodeHash", event.target.value)
                 }
                 placeholder="0x..."
               />
@@ -517,11 +692,8 @@ export function App() {
               <span>Recipient Args</span>
               <input
                 value={actionForm.recipientArgs}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    recipientArgs: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("recipientArgs", event.target.value)
                 }
               />
             </label>
@@ -529,11 +701,8 @@ export function App() {
               <span>Reference Timestamp (refund)</span>
               <input
                 value={actionForm.referenceTimestampMs}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    referenceTimestampMs: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("referenceTimestampMs", event.target.value)
                 }
               />
             </label>
@@ -541,29 +710,82 @@ export function App() {
               <span>Header Dep Hash (refund)</span>
               <input
                 value={actionForm.headerDepHash}
-                onChange={(event) =>
-                  setActionForm((current) => ({
-                    ...current,
-                    headerDepHash: event.target.value,
-                  }))
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  updateActionForm("headerDepHash", event.target.value)
                 }
                 placeholder="0x..."
               />
             </label>
           </div>
           <div className="actions">
-            <button onClick={() => void previewDeliver()}>Preview Deliver</button>
-            <button onClick={() => void previewDispute()}>Preview Dispute</button>
-            <button onClick={() => void previewRefund()}>Preview Refund</button>
-            <button onClick={() => void previewResolveToSeller()}>
+            <button onClick={() => void previewDeliver()} disabled={busyAction !== null}>
+              Preview Deliver
+            </button>
+            <button onClick={() => void sendDeliver()} disabled={busyAction !== null}>
+              Send Deliver
+            </button>
+            <button onClick={() => void previewDispute()} disabled={busyAction !== null}>
+              Preview Dispute
+            </button>
+            <button onClick={() => void sendDispute()} disabled={busyAction !== null}>
+              Send Dispute
+            </button>
+            <button onClick={() => void previewRefund()} disabled={busyAction !== null}>
+              Preview Refund
+            </button>
+            <button onClick={() => void sendRefund()} disabled={busyAction !== null}>
+              Send Refund
+            </button>
+            <button onClick={() => void previewResolveToSeller()} disabled={busyAction !== null}>
               Preview Resolve To Seller
+            </button>
+            <button onClick={() => void sendResolveToSeller()} disabled={busyAction !== null}>
+              Send Resolve To Seller
             </button>
           </div>
         </section>
 
+        <section className="panel">
+          <h2>Decoded Escrow</h2>
+          {decodedEscrow ? (
+            <dl className="decode-grid">
+              <div>
+                <dt>State</dt>
+                <dd>{decodedEscrow.state}</dd>
+              </div>
+              <div>
+                <dt>Amount</dt>
+                <dd>{decodedEscrow.amountShannons.toString()}</dd>
+              </div>
+              <div>
+                <dt>Deadline</dt>
+                <dd>{decodedEscrow.deadlineMs.toString()}</dd>
+              </div>
+              <div className="wide">
+                <dt>Description</dt>
+                <dd>{decodedEscrow.descriptionText}</dd>
+              </div>
+              <div className="wide">
+                <dt>Buyer Lock Hash</dt>
+                <dd>{decodedEscrow.buyerLockHash}</dd>
+              </div>
+              <div className="wide">
+                <dt>Seller Lock Hash</dt>
+                <dd>{decodedEscrow.sellerLockHash}</dd>
+              </div>
+              <div className="wide">
+                <dt>Arbitrator Lock Hash</dt>
+                <dd>{decodedEscrow.arbitratorLockHash}</dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="empty">Paste escrow data hex to see the decoded cell view.</p>
+          )}
+        </section>
+
         <section className="panel preview-panel">
           <h2>Transaction Preview</h2>
-          <pre>{txPreview || "Build a transaction to preview it here."}</pre>
+          <pre>{txPreview || "Build or send a transaction to inspect it here."}</pre>
         </section>
       </main>
     </div>
