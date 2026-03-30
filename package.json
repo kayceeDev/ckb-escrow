@@ -1,0 +1,22 @@
+{
+  "name": "ckb-escrow-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @ckb-escrow/sdk && npm run build --workspace @ckb-escrow/ccc-adapter",
+    "typecheck": "npm run typecheck --workspace @ckb-escrow/sdk && npm run typecheck --workspace @ckb-escrow/ccc-adapter",
+    "test": "npm run test --workspace @ckb-escrow/sdk && npm run test --workspace @ckb-escrow/ccc-adapter"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
+  },
+  "dependencies": {
+    "@ckb-ccc/ccc": "^1.1.25"
+  }
+}

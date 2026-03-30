@@ -1,0 +1,28 @@
+{
+  "name": "@ckb-escrow/ccc-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CCC adapter layer for the CKB escrow protocol SDK",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ckb-ccc/ccc": "^1.1.25",
+    "@ckb-escrow/sdk": "file:../escrow-sdk"
+  }
+}
