@@ -47,7 +47,7 @@ Testnet is the default:
 
 ```bash
 cd /home/ghost/work/ckb-escrow
-./scripts/deploy_testnet_offckb.sh
+./scripts/deploy_offckb.sh
 ```
 
 Mainnet must be requested explicitly:
@@ -56,7 +56,7 @@ Mainnet must be requested explicitly:
 cd /home/ghost/work/ckb-escrow
 CKB_ESCROW_NETWORK=mainnet \
 CKB_ESCROW_MAINNET_CONFIRM=I_UNDERSTAND_MAINNET_RISK \
-./scripts/deploy_testnet_offckb.sh
+./scripts/deploy_offckb.sh
 ```
 
 This writes deployment records into the target network directory:
