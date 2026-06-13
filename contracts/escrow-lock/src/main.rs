@@ -143,7 +143,7 @@ fn validate_terminal_settlement(
     old_escrow: &EscrowData,
     input_lock_hashes: &[[u8; 32]],
     action: EscrowAction,
-    recipient_net_gain: u64,
+    recipient_output_capacity: u64,
     current_timestamp: Option<u64>,
 ) -> Result<(), EscrowError> {
     match (old_escrow.state, action) {
@@ -176,7 +176,7 @@ fn validate_terminal_settlement(
         _ => return Err(EscrowError::InvalidTransition),
     }
 
-    if recipient_net_gain < old_escrow.amount {
+    if recipient_output_capacity < old_escrow.amount {
         return Err(EscrowError::InvalidMoneyFlow);
     }
 
@@ -240,28 +240,6 @@ fn sum_output_capacity_for_lock_hash(expected: &[u8; 32]) -> Result<u64, i8> {
             }
             Err(SysError::IndexOutOfBound) => break,
             Err(_) => return Err(ERR_INVALID_ESCROW_SHAPE),
-        }
-    }
-
-    Ok(total)
-}
-
-fn sum_input_capacity_for_lock_hash(expected: &[u8; 32]) -> Result<u64, i8> {
-    let mut total = 0u64;
-    let mut index = 0;
-
-    loop {
-        match load_cell_lock_hash(index, Source::Input) {
-            Ok(lock_hash) => {
-                if &lock_hash == expected {
-                    let capacity = load_cell_capacity(index, Source::Input)
-                        .map_err(|_| ERR_LOAD_CELL_CAPACITY)?;
-                    total = total.checked_add(capacity).ok_or(ERR_LOAD_CELL_CAPACITY)?;
-                }
-                index += 1;
-            }
-            Err(SysError::IndexOutOfBound) => break,
-            Err(_) => return Err(ERR_LOAD_INPUT_LOCK_HASH),
         }
     }
 
@@ -401,13 +379,6 @@ pub fn program_entry() -> i8 {
                     Ok(amount) => amount,
                     Err(code) => return code,
                 };
-            let recipient_input_capacity =
-                match sum_input_capacity_for_lock_hash(&recipient_lock_hash) {
-                    Ok(amount) => amount,
-                    Err(code) => return code,
-                };
-            let recipient_net_gain =
-                recipient_output_capacity.saturating_sub(recipient_input_capacity);
             let current_timestamp = if action == EscrowAction::Refund {
                 match load_reference_timestamp() {
                     Ok(timestamp) => Some(timestamp),
@@ -421,7 +392,7 @@ pub fn program_entry() -> i8 {
                 &old_escrow,
                 &input_lock_hashes,
                 action,
-                recipient_net_gain,
+                recipient_output_capacity,
                 current_timestamp,
             )
             .map(|_| 0)
@@ -758,6 +729,33 @@ mod tests {
             ),
             Err(EscrowError::InvalidMoneyFlow)
         ));
+    }
+
+    #[test]
+    fn terminal_settlement_allows_signer_inputs_to_pay_fees() {
+        let funded = sample_escrow(EscrowState::Funded);
+        let delivered = sample_escrow(EscrowState::Delivered);
+
+        assert!(
+            validate_terminal_settlement(
+                &funded,
+                &[sample_hash(0x11)],
+                EscrowAction::Refund,
+                funded.amount,
+                Some(funded.deadline),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_terminal_settlement(
+                &delivered,
+                &[sample_hash(0x11)],
+                EscrowAction::Complete,
+                delivered.amount,
+                None,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
