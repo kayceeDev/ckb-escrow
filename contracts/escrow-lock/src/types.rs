@@ -292,6 +292,7 @@ impl EscrowData {
     //
     // Needed when building the OUTPUT cell of a state transition transaction.
     // We create a new cell with the updated state and serialize the data here.
+    #[cfg(test)]
     pub fn to_bytes(&self) -> Vec<u8> {
         // RUST CONCEPT: Vec::new() and capacity hint
         // Vec is a heap-allocated growable array. `with_capacity` pre-allocates
@@ -323,8 +324,8 @@ impl EscrowData {
     // Validate that immutable fields haven't changed between old and new data
     // ─────────────────────────────────────────────────────────────────────────
     //
-    // When a state transition happens, only `state` (and sometimes `description`)
-    // should change. The parties, amount, and deadline are locked in at creation.
+    // When a state transition happens, only `state` should change. The parties,
+    // amount, deadline, and description are locked in at creation.
     //
     // This method checks that the new cell's data is consistent with the old one.
     pub fn assert_immutable_fields_match(&self, new: &EscrowData) -> Result<(), EscrowError> {
@@ -333,6 +334,7 @@ impl EscrowData {
             || self.arbitrator_lock_hash != new.arbitrator_lock_hash
             || self.amount != new.amount
             || self.deadline != new.deadline
+            || self.description != new.description
         {
             return Err(EscrowError::ImmutableFieldChanged);
         }

@@ -56,7 +56,9 @@ build:
 		done; \
 	else \
 		$(MAKE) -e -C contracts/$(CONTRACT) build; \
-		cargo build -p $(CONTRACT)-sim; \
+		if [ -d "native-simulators/$(CONTRACT)-sim" ]; then \
+			cargo build -p $(CONTRACT)-sim; \
+		fi; \
 	fi;
 
 # Run a single make task for a specific contract. For example:

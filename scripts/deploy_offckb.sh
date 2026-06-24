@@ -3,8 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NODE_BIN="${NODE_BIN:-/home/ghost/.nvm/versions/node/v22.22.2/bin}"
-OFFCKB="PATH=${NODE_BIN}:$PATH npx @offckb/cli"
+if [[ -n "${NODE_BIN:-}" ]]; then
+  export PATH="${NODE_BIN}:$PATH"
+fi
+OFFCKB=(npx --no-install @offckb/cli)
 BUILD_TARGET="${ROOT_DIR}/build/release/escrow-lock"
 NETWORK="${CKB_ESCROW_NETWORK:-testnet}"
 
@@ -47,7 +49,7 @@ fi
 mkdir -p "${DEPLOYMENT_DIR}"
 
 echo "Deploying ${BUILD_TARGET} to CKB ${NETWORK} via OffCKB..."
-eval ${OFFCKB} deploy \
+"${OFFCKB[@]}" deploy \
   --network "${NETWORK}" \
   --target "${BUILD_TARGET}" \
   --output "${DEPLOYMENT_DIR}" \

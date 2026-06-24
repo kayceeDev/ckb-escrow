@@ -1,0 +1,15 @@
+{
+  "name": "ckb-escrow-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deployment tooling for the CKB escrow contracts",
+  "type": "module",
+  "scripts": {
+    "offckb": "offckb",
+    "deploy:testnet": "CKB_ESCROW_NETWORK=testnet ./scripts/deploy_offckb.sh",
+    "deploy:mainnet": "CKB_ESCROW_NETWORK=mainnet ./scripts/deploy_offckb.sh"
+  },
+  "devDependencies": {
+    "@offckb/cli": "^0.4.6"
+  }
+}

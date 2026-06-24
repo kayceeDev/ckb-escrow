@@ -62,11 +62,16 @@ if [[ "$(grep -E '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')" 
 fi
 
 $DOCKER run --platform=${DOCKER_IMAGE_PLATFORM} --rm $DOCKER_RUN_ARGS -v `pwd`:/code $DOCKER_IMAGE make $TASKS
-# Reset file ownerships for all files docker might touch
-$DOCKER run --platform=${DOCKER_IMAGE_PLATFORM} --rm $DOCKER_RUN_ARGS -e UID=`id -u` -e GID=`id -g` -v `pwd`:/code $DOCKER_IMAGE bash -c 'chown -R -f $UID:$GID checksums.txt build target'
+# Reset file ownerships for all files docker might touch. The checksum file may
+# not exist on first build, so ownership reset must not make a successful build fail.
+$DOCKER run --platform=${DOCKER_IMAGE_PLATFORM} --rm $DOCKER_RUN_ARGS -e UID=`id -u` -e GID=`id -g` -v `pwd`:/code $DOCKER_IMAGE bash -c 'chown -R -f $UID:$GID ${CHECKSUM_FILE_PATH} build target 2>/dev/null || true'
 
 if [[ "${UPDATE}" = "yes" ]]; then
   echo "${CHECKSUM_FILE_PATH} file is updated with latest binary hashes!"
-else
+elif [[ -f "${CHECKSUM_FILE_PATH}" ]]; then
   shasum -a 256 -c ${CHECKSUM_FILE_PATH}
+else
+  echo "No ${CHECKSUM_FILE_PATH} file found; skipping checksum verification."
+  echo "Run with --update to create one after reviewing the built binaries."
+  shasum -a 256 build/${MODE:-release}/*
 fi

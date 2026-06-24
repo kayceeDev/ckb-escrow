@@ -118,6 +118,10 @@ fn validate_transition(
 ) -> Result<(), EscrowError> {
     old_escrow.assert_immutable_fields_match(new_escrow)?;
 
+    if !old_escrow.state.can_transition_to(new_escrow.state) {
+        return Err(EscrowError::InvalidTransition);
+    }
+
     if old_capacity != new_capacity {
         return Err(EscrowError::InvalidMoneyFlow);
     }
