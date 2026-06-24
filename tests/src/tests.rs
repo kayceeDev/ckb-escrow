@@ -196,6 +196,50 @@ fn test_funded_to_delivered_flow() {
 
 #[test]
 #[ignore = "requires built escrow-lock binary in build/<mode>/escrow-lock"]
+fn test_delivered_to_completed_release_flow() {
+    let mut context = Context::default();
+    let escrow_contract = deploy_escrow_contract(&mut context);
+    let always_success = deploy_always_success(&mut context);
+
+    let buyer_lock = build_party_lock(&mut context, &always_success, 0x11);
+    let seller_lock = build_party_lock(&mut context, &always_success, 0x22);
+    let arbitrator_lock = build_party_lock(&mut context, &always_success, 0x33);
+    let escrow_lock = build_party_lock(&mut context, &always_success, 0x44);
+    let escrow_type = context
+        .build_script(&escrow_contract, Bytes::new())
+        .expect("build escrow type");
+
+    let escrow_input = create_input_cell(
+        &mut context,
+        escrow_lock,
+        Some(escrow_type),
+        escrow_data(&buyer_lock, &seller_lock, &arbitrator_lock, 0x01),
+        ESCROW_CAPACITY,
+    );
+    let buyer_input = create_input_cell(
+        &mut context,
+        buyer_lock,
+        None,
+        Bytes::new(),
+        SIGNER_CAPACITY,
+    );
+    let seller_output = build_plain_output(seller_lock, ESCROW_CAPACITY + SIGNER_CAPACITY);
+
+    let tx = TransactionBuilder::default()
+        .input(escrow_input)
+        .input(buyer_input)
+        .output(seller_output)
+        .output_data(Bytes::new().pack())
+        .witness(action_witness(0x04).pack())
+        .witness(empty_witness().pack())
+        .build();
+    let tx = context.complete_tx(tx);
+
+    verify_and_dump_failed_tx(&context, &tx, MAX_CYCLES).expect("release should verify");
+}
+
+#[test]
+#[ignore = "requires built escrow-lock binary in build/<mode>/escrow-lock"]
 fn test_funded_to_refund_flow() {
     let mut context = Context::default();
     let escrow_contract = deploy_escrow_contract(&mut context);
