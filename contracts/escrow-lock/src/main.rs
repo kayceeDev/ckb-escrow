@@ -147,6 +147,7 @@ fn validate_terminal_settlement(
     old_escrow: &EscrowData,
     input_lock_hashes: &[[u8; 32]],
     action: EscrowAction,
+    recipient_input_capacity: u64,
     recipient_output_capacity: u64,
     current_timestamp: Option<u64>,
 ) -> Result<(), EscrowError> {
@@ -180,7 +181,11 @@ fn validate_terminal_settlement(
         _ => return Err(EscrowError::InvalidTransition),
     }
 
-    if recipient_output_capacity < old_escrow.amount {
+    let recipient_net_gain = recipient_output_capacity
+        .checked_sub(recipient_input_capacity)
+        .ok_or(EscrowError::InvalidMoneyFlow)?;
+
+    if recipient_net_gain < old_escrow.amount {
         return Err(EscrowError::InvalidMoneyFlow);
     }
 
@@ -226,16 +231,16 @@ fn load_reference_timestamp() -> Result<u64, i8> {
     Ok(header.raw().timestamp().unpack())
 }
 
-fn sum_output_capacity_for_lock_hash(expected: &[u8; 32]) -> Result<u64, i8> {
+fn sum_capacity_for_lock_hash(expected: &[u8; 32], source: Source) -> Result<u64, i8> {
     let mut total = 0u64;
     let mut index = 0;
 
     loop {
-        match load_cell_lock_hash(index, Source::Output) {
+        match load_cell_lock_hash(index, source) {
             Ok(lock_hash) => {
                 if &lock_hash == expected {
-                    let capacity = load_cell_capacity(index, Source::Output)
-                        .map_err(|_| ERR_INVALID_ESCROW_SHAPE)?;
+                    let capacity =
+                        load_cell_capacity(index, source).map_err(|_| ERR_INVALID_ESCROW_SHAPE)?;
                     total = total
                         .checked_add(capacity)
                         .ok_or(ERR_INVALID_ESCROW_SHAPE)?;
@@ -378,8 +383,13 @@ pub fn program_entry() -> i8 {
                 _ => return EscrowError::InvalidTransition.code(),
             };
 
+            let recipient_input_capacity =
+                match sum_capacity_for_lock_hash(&recipient_lock_hash, Source::Input) {
+                    Ok(amount) => amount,
+                    Err(code) => return code,
+                };
             let recipient_output_capacity =
-                match sum_output_capacity_for_lock_hash(&recipient_lock_hash) {
+                match sum_capacity_for_lock_hash(&recipient_lock_hash, Source::Output) {
                     Ok(amount) => amount,
                     Err(code) => return code,
                 };
@@ -396,6 +406,7 @@ pub fn program_entry() -> i8 {
                 &old_escrow,
                 &input_lock_hashes,
                 action,
+                recipient_input_capacity,
                 recipient_output_capacity,
                 current_timestamp,
             )
@@ -581,6 +592,7 @@ mod tests {
                 &old_escrow,
                 &seller_only,
                 EscrowAction::Cancel,
+                0,
                 old_escrow.amount,
                 None
             ),
@@ -591,6 +603,7 @@ mod tests {
                 &old_escrow,
                 &buyer_present,
                 EscrowAction::Cancel,
+                0,
                 old_escrow.amount,
                 None
             )
@@ -609,6 +622,7 @@ mod tests {
                 &old_escrow,
                 &seller_only,
                 EscrowAction::Complete,
+                0,
                 old_escrow.amount,
                 None
             ),
@@ -619,6 +633,7 @@ mod tests {
                 &old_escrow,
                 &buyer_present,
                 EscrowAction::Complete,
+                0,
                 old_escrow.amount,
                 None
             )
@@ -634,6 +649,7 @@ mod tests {
             &old_escrow,
             &[sample_hash(0x11)],
             EscrowAction::Refund,
+            0,
             old_escrow.amount,
             Some(old_escrow.deadline - 1),
         );
@@ -649,6 +665,7 @@ mod tests {
             &old_escrow,
             &[sample_hash(0x11)],
             EscrowAction::Refund,
+            0,
             old_escrow.amount,
             Some(old_escrow.deadline),
         );
@@ -665,6 +682,7 @@ mod tests {
                 &old_escrow,
                 &[sample_hash(0x11)],
                 EscrowAction::ResolveToBuyer,
+                0,
                 old_escrow.amount,
                 None
             ),
@@ -675,6 +693,7 @@ mod tests {
                 &old_escrow,
                 &[sample_hash(0x33)],
                 EscrowAction::ResolveToBuyer,
+                0,
                 old_escrow.amount,
                 None
             )
@@ -691,6 +710,7 @@ mod tests {
                 &old_escrow,
                 &[sample_hash(0x22)],
                 EscrowAction::ResolveToSeller,
+                0,
                 old_escrow.amount,
                 None
             ),
@@ -701,6 +721,7 @@ mod tests {
                 &old_escrow,
                 &[sample_hash(0x33)],
                 EscrowAction::ResolveToSeller,
+                0,
                 old_escrow.amount,
                 None
             )
@@ -718,6 +739,7 @@ mod tests {
                 &funded,
                 &[sample_hash(0x11)],
                 EscrowAction::Cancel,
+                0,
                 funded.amount - 1,
                 None
             ),
@@ -728,11 +750,39 @@ mod tests {
                 &delivered,
                 &[sample_hash(0x11)],
                 EscrowAction::Complete,
+                0,
                 delivered.amount - 1,
                 None
             ),
             Err(EscrowError::InvalidMoneyFlow)
         ));
+    }
+
+    #[test]
+    fn terminal_settlement_rejects_recipient_self_funded_gross_payout() {
+        let delivered = sample_escrow(EscrowState::Delivered);
+
+        let result = validate_terminal_settlement(
+            &delivered,
+            &[sample_hash(0x11)],
+            EscrowAction::Complete,
+            delivered.amount,
+            delivered.amount,
+            None,
+        );
+
+        assert!(matches!(result, Err(EscrowError::InvalidMoneyFlow)));
+        assert!(
+            validate_terminal_settlement(
+                &delivered,
+                &[sample_hash(0x11)],
+                EscrowAction::Complete,
+                100,
+                delivered.amount + 100,
+                None,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -745,6 +795,7 @@ mod tests {
                 &funded,
                 &[sample_hash(0x11)],
                 EscrowAction::Refund,
+                0,
                 funded.amount,
                 Some(funded.deadline),
             )
@@ -755,6 +806,7 @@ mod tests {
                 &delivered,
                 &[sample_hash(0x11)],
                 EscrowAction::Complete,
+                0,
                 delivered.amount,
                 None,
             )

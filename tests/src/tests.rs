@@ -356,3 +356,122 @@ fn test_dispute_and_resolve_to_seller_flow() {
 
     verify_and_dump_failed_tx(&context, &resolve_tx, MAX_CYCLES).expect("resolution should verify");
 }
+
+#[test]
+#[ignore = "requires built escrow-lock binary in build/<mode>/escrow-lock"]
+fn test_release_rejects_recipient_self_funded_payout_bypass() {
+    let mut context = Context::default();
+    let escrow_contract = deploy_escrow_contract(&mut context);
+    let always_success = deploy_always_success(&mut context);
+
+    let buyer_lock = build_party_lock(&mut context, &always_success, 0x11);
+    let seller_lock = build_party_lock(&mut context, &always_success, 0x22);
+    let arbitrator_lock = build_party_lock(&mut context, &always_success, 0x33);
+    let escrow_lock = build_party_lock(&mut context, &always_success, 0x44);
+    let escrow_type = context
+        .build_script(&escrow_contract, Bytes::new())
+        .expect("build escrow type");
+
+    let escrow_input = create_input_cell(
+        &mut context,
+        escrow_lock,
+        Some(escrow_type),
+        escrow_data(&buyer_lock, &seller_lock, &arbitrator_lock, 0x01),
+        ESCROW_CAPACITY,
+    );
+    let buyer_input = create_input_cell(
+        &mut context,
+        buyer_lock.clone(),
+        None,
+        Bytes::new(),
+        SIGNER_CAPACITY,
+    );
+    let seller_input = create_input_cell(
+        &mut context,
+        seller_lock.clone(),
+        None,
+        Bytes::new(),
+        ESCROW_AMOUNT,
+    );
+
+    let seller_output = build_plain_output(seller_lock, ESCROW_AMOUNT);
+    let buyer_output = build_plain_output(buyer_lock, ESCROW_CAPACITY + SIGNER_CAPACITY);
+
+    let tx = TransactionBuilder::default()
+        .input(escrow_input)
+        .input(buyer_input)
+        .input(seller_input)
+        .output(seller_output)
+        .output(buyer_output)
+        .output_data(Bytes::new().pack())
+        .output_data(Bytes::new().pack())
+        .witness(action_witness(0x04).pack())
+        .witness(empty_witness().pack())
+        .witness(empty_witness().pack())
+        .build();
+    let tx = context.complete_tx(tx);
+
+    verify_and_dump_failed_tx(&context, &tx, MAX_CYCLES)
+        .expect_err("self-funded recipient payout must be rejected");
+}
+
+#[test]
+#[ignore = "requires built escrow-lock binary in build/<mode>/escrow-lock"]
+fn test_release_allows_recipient_input_when_net_gain_covers_amount() {
+    let mut context = Context::default();
+    let escrow_contract = deploy_escrow_contract(&mut context);
+    let always_success = deploy_always_success(&mut context);
+
+    let buyer_lock = build_party_lock(&mut context, &always_success, 0x11);
+    let seller_lock = build_party_lock(&mut context, &always_success, 0x22);
+    let arbitrator_lock = build_party_lock(&mut context, &always_success, 0x33);
+    let escrow_lock = build_party_lock(&mut context, &always_success, 0x44);
+    let escrow_type = context
+        .build_script(&escrow_contract, Bytes::new())
+        .expect("build escrow type");
+
+    let escrow_input = create_input_cell(
+        &mut context,
+        escrow_lock,
+        Some(escrow_type),
+        escrow_data(&buyer_lock, &seller_lock, &arbitrator_lock, 0x01),
+        ESCROW_CAPACITY,
+    );
+    let buyer_input = create_input_cell(
+        &mut context,
+        buyer_lock.clone(),
+        None,
+        Bytes::new(),
+        SIGNER_CAPACITY,
+    );
+    let seller_input = create_input_cell(
+        &mut context,
+        seller_lock.clone(),
+        None,
+        Bytes::new(),
+        SIGNER_CAPACITY,
+    );
+
+    let seller_output = build_plain_output(seller_lock, ESCROW_AMOUNT + SIGNER_CAPACITY);
+    let buyer_output = build_plain_output(
+        buyer_lock,
+        ESCROW_CAPACITY - ESCROW_AMOUNT + SIGNER_CAPACITY,
+    );
+
+    let tx = TransactionBuilder::default()
+        .input(escrow_input)
+        .input(buyer_input)
+        .input(seller_input)
+        .output(seller_output)
+        .output(buyer_output)
+        .output_data(Bytes::new().pack())
+        .output_data(Bytes::new().pack())
+        .witness(action_witness(0x04).pack())
+        .witness(empty_witness().pack())
+        .witness(empty_witness().pack())
+        .build();
+    let tx = context.complete_tx(tx);
+
+    verify_and_dump_failed_tx(&context, &tx, MAX_CYCLES)
+        .expect("recipient input is valid when recipient net gain covers escrow amount");
+}
